@@ -1,64 +1,8 @@
-use std::fs;
-
+use crate::actions::types::{AuthToken, ImageManifest, ManifestResponse};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use std::fs;
 use tokio::io::AsyncWriteExt;
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-enum ManifestResponse {
-    V2(ImageManifest),
-    List(ManifestList),
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ImageManifest {
-    #[serde(rename = "schemaVersion")]
-    schema_version: i32,
-    #[serde(rename = "mediaType")]
-    media_type: String,
-    config: Layer,
-    layers: Vec<Layer>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ManifestList {
-    #[serde(rename = "schemaVersion")]
-    schema_version: i32,
-    #[serde(rename = "mediaType")]
-    media_type: String,
-    manifests: Vec<PlatformManifest>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct PlatformManifest {
-    #[serde(rename = "mediaType")]
-    media_type: String,
-    size: u64,
-    digest: String,
-    platform: Option<Platform>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Platform {
-    architecture: String,
-    os: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    variant: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Layer {
-    #[serde(rename = "mediaType")]
-    media_type: String,
-    size: u64,
-    digest: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AuthToken {
-    token: String,
-}
 pub async fn pull_image(image_tag: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("🔄 Pulling image: {}", image_tag);
 
@@ -70,7 +14,7 @@ pub async fn pull_image(image_tag: &str) -> Result<(), Box<dyn std::error::Error
 
     let manifest_response = get_manifest(&client, &repository, &tag, &token).await?;
 
-    let image_manifest = match manifest_response {
+    let mut image_manifest = match manifest_response {
         ManifestResponse::V2(manifest) => {
             println!("Image manifest schema version: {}", manifest.schema_version);
             manifest
@@ -132,6 +76,7 @@ pub async fn pull_image(image_tag: &str) -> Result<(), Box<dyn std::error::Error
         download_blob(&client, &repository, &layer.digest, &token, &image_dir).await?;
     }
 
+    image_manifest.tag = Some(tag.clone());
     let manifest_path = format!("{}/manifest.json", image_dir);
     let manifest_json = serde_json::to_string_pretty(&image_manifest)?;
     fs::write(manifest_path, manifest_json)?;

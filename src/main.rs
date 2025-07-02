@@ -87,6 +87,7 @@ async fn main() {
                         .index(1),
                 ),
         )
+        .subcommand(Command::new("images").about("List locally stored images"))
         .get_matches();
 
     match matches.subcommand() {
@@ -98,6 +99,12 @@ async fn main() {
         }
         Some(("pull", sub_matches)) => {
             if let Err(e) = handle_pull_command(sub_matches).await {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
+        Some(("images", _)) => {
+            if let Err(e) = handle_images_command().await {
                 eprintln!("Error: {}", e);
                 process::exit(1);
             }
@@ -123,5 +130,10 @@ async fn handle_run_command(matches: &ArgMatches) -> Result<(), Box<dyn std::err
 async fn handle_pull_command(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
     let image = matches.get_one::<String>("image").unwrap();
     actions::pull::pull_image(image).await?;
+    Ok(())
+}
+
+async fn handle_images_command() -> Result<(), Box<dyn std::error::Error>> {
+    actions::images::list_images().await?;
     Ok(())
 }
