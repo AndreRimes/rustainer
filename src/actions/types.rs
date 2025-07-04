@@ -11,7 +11,6 @@ pub enum ManifestResponse {
 pub struct ImageManifest {
     #[serde(rename = "schemaVersion")]
     pub schema_version: i32,
-    pub tag: Option<String>,
     #[serde(rename = "mediaType")]
     pub media_type: String,
     pub config: Layer,

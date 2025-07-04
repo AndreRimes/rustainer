@@ -14,7 +14,7 @@ pub async fn pull_image(image_tag: &str) -> Result<(), Box<dyn std::error::Error
 
     let manifest_response = get_manifest(&client, &repository, &tag, &token).await?;
 
-    let mut image_manifest = match manifest_response {
+    let image_manifest = match manifest_response {
         ManifestResponse::V2(manifest) => {
             println!("Image manifest schema version: {}", manifest.schema_version);
             manifest
@@ -53,7 +53,7 @@ pub async fn pull_image(image_tag: &str) -> Result<(), Box<dyn std::error::Error
         }
     };
 
-    let image_dir = format!("./images/{}", repository.replace('/', "_"));
+    let image_dir = format!("./images/{}/{}", repository.replace('/', "_"), tag);
     fs::create_dir_all(&image_dir)?;
 
     println!("📥 Downloading config...");
@@ -76,7 +76,6 @@ pub async fn pull_image(image_tag: &str) -> Result<(), Box<dyn std::error::Error
         download_blob(&client, &repository, &layer.digest, &token, &image_dir).await?;
     }
 
-    image_manifest.tag = Some(tag.clone());
     let manifest_path = format!("{}/manifest.json", image_dir);
     let manifest_json = serde_json::to_string_pretty(&image_manifest)?;
     fs::write(manifest_path, manifest_json)?;
@@ -85,7 +84,7 @@ pub async fn pull_image(image_tag: &str) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn parse_image_tag(image_tag: &str) -> (String, String) {
+pub fn parse_image_tag(image_tag: &str) -> (String, String) {
     if let Some(pos) = image_tag.rfind(':') {
         let repository = image_tag[..pos].to_string();
         let tag = image_tag[pos + 1..].to_string();

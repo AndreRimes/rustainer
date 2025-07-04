@@ -119,11 +119,47 @@ async fn main() {
 }
 
 async fn handle_run_command(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
-    let image = matches.get_one::<String>("image").unwrap();
+    let image = matches.get_one::<String>("image").unwrap().clone();
+    let name = matches.get_one::<String>("name").cloned();
+    let detach = matches.get_flag("detach");
+    let interactive = matches.get_flag("interactive");
+    let tty = matches.get_flag("tty");
 
-    println!("🚀 Starting container runtime...");
-    println!("📦 Image: {}", image);
+    let env_vars = matches
+        .get_many::<String>("env")
+        .unwrap_or_default()
+        .cloned()
+        .collect();
 
+    let volumes = matches
+        .get_many::<String>("volume")
+        .unwrap_or_default()
+        .cloned()
+        .collect();
+
+    let ports = matches
+        .get_many::<String>("port")
+        .unwrap_or_default()
+        .cloned()
+        .collect();
+
+    let command = matches
+        .get_many::<String>("command")
+        .map(|vals| vals.cloned().collect());
+
+    let config = actions::run::RunConfig {
+        image,
+        name,
+        detach,
+        interactive,
+        tty,
+        env_vars,
+        volumes,
+        ports,
+        command,
+    };
+
+    actions::run::run_container(config).await?;
     Ok(())
 }
 

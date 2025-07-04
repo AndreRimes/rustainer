@@ -25,8 +25,15 @@ pub async fn list_images() -> Result<(), Box<dyn std::error::Error>> {
         let path = entry.path();
 
         if path.is_dir() {
-            if let Some(image_info) = parse_image_directory(&path).await? {
-                images.push(image_info);
+            for tag_entry in fs::read_dir(&path)? {
+                let tag_entry = tag_entry?;
+                let tag_path = tag_entry.path();
+
+                if tag_path.is_dir() {
+                    if let Some(image_info) = parse_image_directory(&tag_path).await? {
+                        images.push(image_info);
+                    }
+                }
             }
         }
     }
@@ -55,12 +62,14 @@ async fn parse_image_directory(
     let manifest_content = fs::read_to_string(&manifest_path)?;
     let manifest: ImageManifest = serde_json::from_str(&manifest_content)?;
 
-    let dir_name = path
-        .file_name()
+
+    let repository_dir = path
+        .parent()
+        .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    let repository = dir_name.replace('_', "/");
+    let repository = repository_dir.replace('_', "/");
 
     let metadata = fs::metadata(&manifest_path)?;
     let created = metadata
@@ -84,15 +93,15 @@ async fn parse_image_directory(
         .take(12)
         .collect();
 
-    let img_tag = if let Some(tag) = manifest.tag {
-        tag
-    } else {
-        "latest".to_owned()
-    };
+    let tag = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
 
     Ok(Some(ImageInfo {
         repository,
-        tag: img_tag,
+        tag,
         image_id,
         created: created_str,
         size: total_size,
