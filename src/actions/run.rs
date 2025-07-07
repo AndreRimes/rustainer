@@ -147,198 +147,123 @@ fn setup_container_networking(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("🌐 Setting up container networking...");
 
-    create_network_namespace(container_id)?;
+    create_container_namespace(container_id)?;
 
-    ensure_bridge_exists("rustainer0")?;
+    create_host_switch("rustainer0")?;
 
-    let (host_veth, container_veth) = create_veth_pair(container_id)?;
+    let (veth_container, _) = create_bridge(container_id)?;
 
-    attach_veth_to_bridge(&host_veth, "rustainer0")?;
-    attach_veth_to_bridge(&container_veth, "rustainer0")?;
+    add_ip_to_network(container_id, &veth_container)?;
 
-    move_veth_to_namespace(&container_veth, container_id)?;
+    add_routing_rules(container_id)?;
 
-    configure_container_interface(container_id, &container_veth)?;
-
-    if !ports.is_empty() {
-        setup_port_forwarding(container_id, ports)?;
-    }
-
-    println!("✅ Container network configured successfully");
     Ok(())
 }
 
-fn create_network_namespace(container_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Creating network namespace for container: {}", container_id);
-
+fn create_container_namespace(container_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("ip")
-        .args(&["netns", "add", container_id]) // ip netns add <container_id>
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("File exists") {
-            return Err(format!("Failed to create network namespace: {}", stderr).into());
-        }
-    }
-
-    Ok(())
-}
-
-fn ensure_bridge_exists(bridge_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🌉 Ensuring bridge exists: {}", bridge_name);
-
-    let check_output = Command::new("ip")
-        .args(&["link", "show", bridge_name])
-        .output()?;
-
-    if !check_output.status.success() {
-        println!("🔧 Creating bridge: {}", bridge_name);
-
-        let output = Command::new("ip")
-            .args(&["link", "add", "name", bridge_name, "type", "bridge"])
-            .output()?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "Failed to create bridge: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-
-        let output = Command::new("ip")
-            .args(&["addr", "add", "172.18.0.1/16", "dev", bridge_name])
-            .output()?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "Failed to assign IP to bridge: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-
-        let output = Command::new("ip")
-            .args(&["link", "set", bridge_name, "up"])
-            .output()?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "Failed to bring up bridge: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-
-        setup_nat_rules(bridge_name)?;
-
-        println!("✅ Bridge {} created and activated", bridge_name);
-    } else {
-        println!("✅ Bridge {} already exists", bridge_name);
-    }
-
-    Ok(())
-}
-
-fn setup_nat_rules(bridge_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔧 Setting up NAT rules for bridge: {}", bridge_name);
-
-    let output = Command::new("sysctl")
-        .args(&["-w", "net.ipv4.ip_forward=1"])
+        .args(&["netns", "add", container_id])
         .output()?;
 
     if !output.status.success() {
         return Err(format!(
-            "Failed to enable IP forwarding: {}",
+            "Failed to create network namespace: {}",
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
     }
 
-    let output = Command::new("iptables")
-        .args(&[
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-s",
-            "172.18.0.0/16",
-            "!",
-            "-o",
-            bridge_name,
-            "-j",
-            "MASQUERADE",
-        ])
+    Ok(())
+}
+
+fn create_host_switch(host_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let host_name = host_name.trim();
+
+    let check_output = Command::new("ip")
+        .args(&["link", "show", host_name])
         .output()?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("iptables: Chain already exists") {
-            println!("⚠️ Warning: Could not add NAT rule: {}", stderr);
-        }
+    if check_output.status.success() {
+        return Ok(());
     }
 
-    let output = Command::new("iptables")
-        .args(&[
-            "-A",
-            "FORWARD",
-            "-i",
-            bridge_name,
-            "-o",
-            bridge_name,
-            "-j",
-            "ACCEPT",
-        ])
+    let output = Command::new("ip")
+        .args(&["link", "add", host_name, "type", "bridge"])
         .output()?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("iptables: Chain already exists") {
-            println!("⚠️ Warning: Could not add FORWARD rule: {}", stderr);
-        }
+        return Err(format!(
+            "Failed to create host switch: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let output = Command::new("ip")
+        .args(&["link", "set", "dev", host_name, "up"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to bring up host switch: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
     }
 
     Ok(())
 }
 
-fn parse_port_mapping(port_mapping: &str) -> Result<(u16, u16), Box<dyn std::error::Error>> {
-    let parts: Vec<&str> = port_mapping.split(':').collect();
+fn create_bridge(container_id: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let short_id: String = container_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
 
-    if parts.len() != 2 {
-        return Err("Port mapping format should be 'port' or 'host_port:container_port'".into());
-    }
-
-    let host_port = parts[0].parse::<u16>()?;
-    let container_port = parts[1].parse::<u16>()?;
-    Ok((host_port, container_port))
-}
-
-fn create_veth_pair(container_id: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let host_veth = format!("veth-{}", &container_id[..8]);
-    let container_veth = format!("cveth-{}", &container_id[..8]);
-
-    println!(
-        "🔗 Creating veth pair: {} <-> {}",
-        host_veth, container_veth
-    );
+    let container_veth = format!("veth{}c", short_id);
+    let host_veth = format!("veth{}h", short_id);
 
     let output = Command::new("ip")
         .args(&[
             "link",
             "add",
-            &host_veth,
+            &container_veth,
             "type",
             "veth",
             "peer",
             "name",
-            &container_veth,
+            &host_veth,
         ])
         .output()?;
 
     if !output.status.success() {
         return Err(format!(
             "Failed to create veth pair: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let output = Command::new("ip")
+        .args(&["link", "set", &container_veth, "netns", container_id])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to move veth to container namespace: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let output = Command::new("ip")
+        .args(&["link", "set", &host_veth, "master", "rustainer0"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to attach host veth to bridge: {}",
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
@@ -356,61 +281,55 @@ fn create_veth_pair(container_id: &str) -> Result<(String, String), Box<dyn std:
         .into());
     }
 
-    Ok((host_veth, container_veth))
+    println!(
+        "🔗 Created veth pair: {} (container) <-> {} (host)",
+        container_veth, host_veth
+    );
+
+    Ok((container_veth, host_veth))
 }
 
-fn attach_veth_to_bridge(
-    veth_name: &str,
-    bridge_name: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔌 Attaching {} to bridge {}", veth_name, bridge_name);
-
-    let output = Command::new("ip")
-        .args(&["link", "set", veth_name, "master", bridge_name])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to attach veth to bridge: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-
-    Ok(())
-}
-
-fn move_veth_to_namespace(
-    veth_name: &str,
-    namespace: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("📦 Moving {} to namespace {}", veth_name, namespace);
-
-    let output = Command::new("ip")
-        .args(&["link", "set", veth_name, "netns", namespace])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to move veth to namespace: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-
-    Ok(())
-}
-
-fn configure_container_interface(
+fn add_ip_to_network(
     container_id: &str,
-    interface_name: &str,
+    veth_container: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("⚙️ Configuring container interface: {}", interface_name);
+    let output = Command::new("ip")
+        .args(&["addr", "add", "172.18.0.1/16", "dev", "rustainer0"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to add IP to host: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
 
     let ip_suffix = (container_id.len() % 254) + 2;
-    let container_ip = format!("172.18.0.{}/16", ip_suffix);
+    let container_ip = format!("172.18.0.{}", ip_suffix);
 
-    // 1. Renomear interface para eth0
+    let output = Command::new("ip")
+        .args(&[
+            "netns",
+            "exec",
+            container_id,
+            "ip",
+            "addr",
+            "add",
+            &format!("{}/16", container_ip),
+            "dev",
+            veth_container,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to add IP to container: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
     let output = Command::new("ip")
         .args(&[
             "netns",
@@ -419,23 +338,50 @@ fn configure_container_interface(
             "ip",
             "link",
             "set",
-            interface_name,
-            "name",
-            "eth0",
+            veth_container,
+            "up",
         ])
         .output()?;
-
     if !output.status.success() {
         return Err(format!(
-            "Failed to rename interface: {}",
+            "Failed to bring up veth in container namespace: {}",
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
     }
 
-    // 2. Ativar loopback primeiro
     let output = Command::new("ip")
         .args(&[
+            "netns",
+            "exec",
+            container_id,
+            "ip",
+            "route",
+            "add",
+            "default",
+            "via",
+            "172.18.0.1",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to add default route: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    println!("🖥️ Container {} IP: {}", container_id, container_ip);
+
+    Ok(())
+}
+
+fn add_routing_rules(container_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🌐 Adding routing rules for container: {}", container_id);
+
+
+    let output = Command::new("ip")
+        .args(&[ 
             "netns",
             "exec",
             container_id,
@@ -455,161 +401,28 @@ fn configure_container_interface(
         .into());
     }
 
-    // 3. Configurar IP da interface
-    let output = Command::new("ip")
+    let output = Command::new("iptables")
         .args(&[
-            "netns",
-            "exec",
-            container_id,
-            "ip",
-            "addr",
-            "add",
-            &container_ip,
-            "dev",
-            "eth0",
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            "172.18.0.0/16",
+            "!",
+            "-o",
+            "rustainer0",
+            "-j",
+            "MASQUERADE",
         ])
         .output()?;
 
     if !output.status.success() {
         return Err(format!(
-            "Failed to assign IP to container interface: {}",
+            "Failed to set up NAT rules: {}",
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
-    }
-
-    // 4. Ativar interface eth0
-    let output = Command::new("ip")
-        .args(&[
-            "netns",
-            "exec",
-            container_id,
-            "ip",
-            "link",
-            "set",
-            "eth0",
-            "up",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to bring up container interface: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-
-    // 5. Aguardar um pouco para a interface ficar pronta
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // 6. Configurar rota padrão
-    let output = Command::new("ip")
-        .args(&[
-            "netns",
-            "exec",
-            container_id,
-            "ip",
-            "route",
-            "add",
-            "default",
-            "via",
-            "172.18.0.1",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("File exists") {
-            return Err(format!("Failed to add default route: {}", stderr).into());
-        }
-    }
-
-    // 7. Debug: verificar configuração final
-    println!("📡 Container IP configured: {}", container_ip);
-
-    // Verificar se tudo está funcionando
-    let output = Command::new("ip")
-        .args(&["netns", "exec", container_id, "ip", "addr", "show", "eth0"])
-        .output()?;
-
-    if output.status.success() {
-        println!(
-            "🔍 Interface eth0 status: {}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-    }
-
-    Ok(())
-}
-
-fn setup_port_forwarding(
-    container_id: &str,
-    ports: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!(
-        "🔀 Setting up port forwarding for container: {}",
-        container_id
-    );
-
-    let ip_suffix = (container_id.len() % 254) + 2;
-    let container_ip = format!("172.18.0.{}", ip_suffix);
-
-    for port_mapping in ports {
-        let (host_port, container_port) = parse_port_mapping(port_mapping)?;
-
-        println!(
-            "🔁 Forwarding host port {} -> container port {} ({})",
-            host_port, container_port, container_ip
-        );
-
-        let output = Command::new("iptables")
-            .args(&[
-                "-t",
-                "nat",
-                "-A",
-                "PREROUTING",
-                "-p",
-                "tcp",
-                "--dport",
-                &host_port.to_string(),
-                "-j",
-                "DNAT",
-                "--to-destination",
-                &format!("{}:{}", container_ip, container_port),
-            ])
-            .output()?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "Failed to set up DNAT rule: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-
-        let output = Command::new("iptables")
-            .args(&[
-                "-A",
-                "FORWARD",
-                "-p",
-                "tcp",
-                "-d",
-                &container_ip,
-                "--dport",
-                &container_port.to_string(),
-                "-j",
-                "ACCEPT",
-            ])
-            .output()?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "Failed to set up FORWARD rule: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
     }
 
     Ok(())
@@ -689,12 +502,10 @@ async fn execute_container(
     ]);
     cmd.args(&command);
 
-    // Set environment variables
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
 
-    // Configure stdio
     if config.detach {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());

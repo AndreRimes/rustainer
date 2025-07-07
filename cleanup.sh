@@ -15,9 +15,9 @@ for ns in $(ip netns list 2>/dev/null | grep rustainer | awk '{print $1}'); do
     sudo ip netns delete "$ns" 2>/dev/null || true
 done
 
-# Limpar interfaces veth (melhorado)
+# Limpar interfaces veth (corrigido para o padrão correto)
 echo "Cleaning veth interfaces..."
-for veth in $(ip link show 2>/dev/null | grep -E "(veth-rustaine|cveth-rustaine)" | awk '{print $2}' | cut -d':' -f1 | cut -d'@' -f1); do
+for veth in $(ip link show 2>/dev/null | grep -E "(veth.*[ch])" | awk '{print $2}' | cut -d':' -f1 | cut -d'@' -f1); do
     echo "Deleting veth: $veth"
     sudo ip link delete "$veth" 2>/dev/null || true
 done
@@ -42,7 +42,7 @@ sudo rm -rf ./containers/rustainer_* 2>/dev/null || true
 # Verificação final
 echo "🔍 Final verification..."
 echo "Namespaces: $(ip netns list 2>/dev/null | grep rustainer | wc -l)"
-echo "Veth interfaces: $(ip link show 2>/dev/null | grep -E "(veth-rustaine|cveth-rustaine)" | wc -l)"
+echo "Veth interfaces: $(ip link show 2>/dev/null | grep -E "(veth.*[ch])" | wc -l)"
 echo "Containers: $(ls -la containers/ 2>/dev/null | grep rustainer | wc -l)"
 
 echo "✅ Cleanup completed!"
