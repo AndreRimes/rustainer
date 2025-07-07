@@ -228,14 +228,20 @@ fn create_host_switch(host_name: &str) -> Result<(), Box<dyn std::error::Error>>
 }
 
 fn create_bridge(container_id: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
     let short_id: String = container_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
-        .take(8)
+        .take(4)
         .collect();
 
-    let container_veth = format!("veth{}c", short_id);
-    let host_veth = format!("veth{}h", short_id);
+    let container_veth = format!("veth{}c{}", short_id, timestamp % 10000);
+    let host_veth = format!("veth{}h{}", short_id, timestamp % 10000);
 
     let output = Command::new("ip")
         .args(&[
@@ -306,16 +312,23 @@ fn add_ip_to_network(
     container_id: &str,
     veth_container: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("ip")
-        .args(&["addr", "add", "172.19.0.1/16", "dev", "rustainer0"])
+
+    let check_ip = Command::new("ip")
+        .args(&["addr", "show", "dev", "rustainer0"])
         .output()?;
 
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to add IP to host: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+    if !String::from_utf8_lossy(&check_ip.stdout).contains("172.19.0.1/16") {
+        let output = Command::new("ip")
+            .args(&["addr", "add", "172.19.0.1/16", "dev", "rustainer0"])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "Failed to add IP to host: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
     }
 
     let ip_suffix = (container_id.len() % 254) + 2;
