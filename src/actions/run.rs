@@ -147,15 +147,28 @@ fn setup_container_networking(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("🌐 Setting up container networking...");
 
+    let output = Command::new("sysctl")
+        .args(&["-w", "net.ipv4.ip_forward=1"])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to enable IP forwarding: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
     create_container_namespace(container_id)?;
 
     create_host_switch("rustainer0")?;
 
     let (veth_container, _) = create_bridge(container_id)?;
 
-    add_ip_to_network(container_id, &veth_container)?;
+    let container_ip = add_ip_to_network(container_id, &veth_container)?;
 
     add_routing_rules(container_id)?;
+
+    setup_port_mapping(&container_ip, ports)?;
 
     Ok(())
 }
@@ -292,9 +305,9 @@ fn create_bridge(container_id: &str) -> Result<(String, String), Box<dyn std::er
 fn add_ip_to_network(
     container_id: &str,
     veth_container: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     let output = Command::new("ip")
-        .args(&["addr", "add", "172.18.0.1/16", "dev", "rustainer0"])
+        .args(&["addr", "add", "172.19.0.1/16", "dev", "rustainer0"])
         .output()?;
 
     if !output.status.success() {
@@ -306,7 +319,7 @@ fn add_ip_to_network(
     }
 
     let ip_suffix = (container_id.len() % 254) + 2;
-    let container_ip = format!("172.18.0.{}", ip_suffix);
+    let container_ip = format!("172.19.0.{}", ip_suffix);
 
     let output = Command::new("ip")
         .args(&[
@@ -360,7 +373,7 @@ fn add_ip_to_network(
             "add",
             "default",
             "via",
-            "172.18.0.1",
+            "172.19.0.1",
         ])
         .output()?;
     if !output.status.success() {
@@ -373,15 +386,14 @@ fn add_ip_to_network(
 
     println!("🖥️ Container {} IP: {}", container_id, container_ip);
 
-    Ok(())
+    Ok(container_ip)
 }
 
 fn add_routing_rules(container_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("🌐 Adding routing rules for container: {}", container_id);
 
-
     let output = Command::new("ip")
-        .args(&[ 
+        .args(&[
             "netns",
             "exec",
             container_id,
@@ -408,7 +420,7 @@ fn add_routing_rules(container_id: &str) -> Result<(), Box<dyn std::error::Error
             "-A",
             "POSTROUTING",
             "-s",
-            "172.18.0.0/16",
+            "172.19.0.0/16",
             "!",
             "-o",
             "rustainer0",
@@ -423,6 +435,165 @@ fn add_routing_rules(container_id: &str) -> Result<(), Box<dyn std::error::Error
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
+    }
+
+    Ok(())
+}
+
+fn setup_port_mapping(
+    container_ip: &str,
+    ports: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for port_mapping in ports {
+        let parts: Vec<&str> = port_mapping.split(':').collect();
+        if parts.len() != 2 {
+            return Err(format!(
+                "Invalid port mapping format: {}. Expected format is <host_port>:<container_port>",
+                port_mapping
+            )
+            .into());
+        }
+        let host_port = parts[0];
+        let container_port = parts[1];
+
+        let output = Command::new("iptables")
+            .args(&[
+                "-t",
+                "nat",
+                "-A",
+                "PREROUTING",
+                "-p",
+                "tcp",
+                "--dport",
+                host_port,
+                "-j",
+                "DNAT",
+                "--to-destination",
+                &format!("{}:{}", container_ip, container_port),
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Error configuring DNAT (PREROUTING) for port {}: {}",
+                host_port,
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+
+        let output = Command::new("iptables")
+            .args(&[
+                "-t",
+                "nat",
+                "-A",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "--dport",
+                host_port,
+                "-j",
+                "DNAT",
+                "--to-destination",
+                &format!("{}:{}", container_ip, container_port),
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Error configuring DNAT (OUTPUT) for port {}: {}",
+                host_port,
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+
+        let output = Command::new("iptables")
+            .args(&[
+                "-A",
+                "FORWARD",
+                "-i",
+                "rustainer0",
+                "!",
+                "-o",
+                "rustainer0",
+                "-j",
+                "ACCEPT",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Error allowing FORWARD for host to container: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+
+        let output = Command::new("iptables")
+            .args(&[
+                "-A",
+                "FORWARD",
+                "-o",
+                "rustainer0",
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "RELATED,ESTABLISHED",
+                "-j",
+                "ACCEPT",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Erro ao permitir FORWARD para conexões estabelecidas: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+
+        let output = Command::new("iptables")
+            .args(&[
+                "-A",
+                "FORWARD",
+                "-d",
+                container_ip,
+                "-p",
+                "tcp",
+                "--dport",
+                container_port,
+                "-o",
+                "rustainer0",
+                "-j",
+                "ACCEPT",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Erro ao permitir FORWARD para o container: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+
+        let output = Command::new("iptables")
+            .args(&[
+                "-A",
+                "FORWARD",
+                "-o",
+                "rustainer0",
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "RELATED,ESTABLISHED",
+                "-j",
+                "ACCEPT",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Erro ao permitir FORWARD para conexões estabelecidas (container): {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
     }
 
     Ok(())
