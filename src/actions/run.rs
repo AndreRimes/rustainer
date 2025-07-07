@@ -55,6 +55,17 @@ pub async fn run_container(config: RunConfig) -> Result<(), Box<dyn std::error::
     let env_vars = prepare_environment(&config.env_vars, &image_config.env);
     let cmd = prepare_command(&config.command, &image_config.cmd, &image_config.entrypoint);
 
+    let metadata = serde_json::json!({
+        "image": config.image,
+        "command": cmd.join(" "),
+        "ports": config.ports,
+        "created": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    });
+
+    let metadata_path = format!("{}/metadata.json", &container_path);
+    fs::write(metadata_path, serde_json::to_string_pretty(&metadata)?)?;
+
+
     execute_container(&container_id, &container_path, cmd, env_vars, &config).await?;
 
     Ok(())
@@ -312,7 +323,6 @@ fn add_ip_to_network(
     container_id: &str,
     veth_container: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-
     let check_ip = Command::new("ip")
         .args(&["addr", "show", "dev", "rustainer0"])
         .output()?;
