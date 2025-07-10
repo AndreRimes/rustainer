@@ -89,6 +89,23 @@ async fn main() {
         )
         .subcommand(Command::new("images").about("List locally stored images"))
         .subcommand(Command::new("ps").about("List containers"))
+        .subcommand(
+            Command::new("rm")
+                .about("Remove one or more containers")
+                .arg(
+                    Arg::new("container")
+                        .help("Container ID or name to remove")
+                        .required(true)
+                        .index(1),
+                )
+                .arg(
+                    Arg::new("force")
+                        .short('f')
+                        .long("force")
+                        .help("Force the removal of a running container")
+                        .action(clap::ArgAction::SetTrue),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -116,9 +133,15 @@ async fn main() {
                 process::exit(1);
             }
         }
+        Some(("rm", sub_matches)) => {
+            if let Err(e) = handle_rm_command(sub_matches).await {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
         _ => {
             eprintln!(
-                "No subcommand provided. Use 'rustainer pull <image>', 'rustainer run <image>', 'rustainer images', or 'rustainer ps'."
+                "No subcommand provided. Use 'rustainer pull <image>', 'rustainer run <image>', 'rustainer images', 'rustainer ps', or 'rustainer rm <container>'."
             );
             process::exit(1);
         }
@@ -183,5 +206,12 @@ async fn handle_images_command() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn handle_ps_command() -> Result<(), Box<dyn std::error::Error>> {
     actions::ls::list_containers().await?;
+    Ok(())
+}
+
+async fn handle_rm_command(matches: &ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
+    let container_id = matches.get_one::<String>("container").unwrap();
+
+    actions::rm::remove_container(container_id).await?;
     Ok(())
 }
