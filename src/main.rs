@@ -88,6 +88,7 @@ async fn main() {
                 ),
         )
         .subcommand(Command::new("images").about("List locally stored images"))
+        .subcommand(Command::new("ps").about("List containers"))
         .get_matches();
 
     match matches.subcommand() {
@@ -109,9 +110,15 @@ async fn main() {
                 process::exit(1);
             }
         }
+        Some(("ps", _)) => {
+            if let Err(e) = handle_ps_command().await {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
         _ => {
             eprintln!(
-                "No subcommand provided. Use 'rustainer pull <image>' or 'rustainer run <image>'."
+                "No subcommand provided. Use 'rustainer pull <image>', 'rustainer run <image>', 'rustainer images', or 'rustainer ps'."
             );
             process::exit(1);
         }
@@ -171,5 +178,10 @@ async fn handle_pull_command(matches: &ArgMatches) -> Result<(), Box<dyn std::er
 
 async fn handle_images_command() -> Result<(), Box<dyn std::error::Error>> {
     actions::images::list_images().await?;
+    Ok(())
+}
+
+async fn handle_ps_command() -> Result<(), Box<dyn std::error::Error>> {
+    actions::ls::list_containers().await?;
     Ok(())
 }

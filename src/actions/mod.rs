@@ -1,4 +1,5 @@
 pub mod images;
 pub mod pull;
 pub mod run;
-mod types; // Add this line
+mod types; 
+pub mod ls;

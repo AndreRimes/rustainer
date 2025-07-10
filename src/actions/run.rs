@@ -65,7 +65,6 @@ pub async fn run_container(config: RunConfig) -> Result<(), Box<dyn std::error::
     let metadata_path = format!("{}/metadata.json", &container_path);
     fs::write(metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
-
     execute_container(&container_id, &container_path, cmd, env_vars, &config).await?;
 
     Ok(())
