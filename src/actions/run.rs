@@ -713,24 +713,19 @@ async fn execute_container(
              container_id, rootfs_path, command);
 
     if config.detach {
-        // Executar em background
         let child = cmd.spawn()?;
         println!(
             "🔧 Container running in background with PID: {}",
             child.id()
         );
 
-        // Aguardar um pouco para dar tempo do nginx inicializar
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         println!("✅ Container started successfully");
-        // Não limpar recursos imediatamente quando em detach mode
         return Ok(());
     } else {
-        // Executar em foreground
         let status = cmd.status()?;
 
-        // Limpar recursos de rede após execução
         if let Err(e) = cleanup_container_networking(container_id) {
             println!("⚠️ Warning: Failed to cleanup networking: {}", e);
         }
