@@ -105,7 +105,6 @@ fn stop_container(container_id: &str) -> Result<(), Box<dyn std::error::Error>> 
 
         std::thread::sleep(std::time::Duration::from_millis(500));
 
-        // Remover o namespace de rede
         let _ = Command::new("ip")
             .args(&["netns", "delete", container_id])
             .output();
